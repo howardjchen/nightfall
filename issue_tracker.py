@@ -229,11 +229,12 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default="127.0.0.1", help="Bind address; use 0.0.0.0 for LAN access")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
     initialize()
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    print(f"Open http://127.0.0.1:{args.port}  (database: {DB.resolve()})", flush=True)
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    print(f"Listening on http://{args.host}:{args.port}  (database: {DB.resolve()})", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
