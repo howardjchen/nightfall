@@ -51,8 +51,8 @@ input::placeholder,textarea::placeholder{color:#aaa9a5;opacity:1}
 <select name="status" class="status" data-status="Pending" onchange="this.dataset.status=this.value" aria-label="New task status"><option>Pending</option><option>Ongoing</option><option>Blocked</option><option>Done</option></select>
 <textarea name="note" placeholder="Note" maxlength="2000" rows="1" aria-label="New task note"></textarea>
 <button>Add task</button></form>
-<p class="hint">Text edits save when you leave the field.</p>
-<div class="table-wrap"><table><caption>Tasks</caption><thead><tr><th scope="col">Priority</th><th scope="col">Topics</th><th scope="col">Status</th><th scope="col">Note</th></tr></thead><tbody id="task-rows"></tbody></table></div>
+<p class="hint">Edits save when you leave the field. Ongoing time is in hours (1.5 = 1h 30m); editing it replaces the total.</p>
+<div class="table-wrap"><table><caption>Tasks</caption><thead><tr><th scope="col">Priority</th><th scope="col">Topics</th><th scope="col">Status</th><th scope="col">Note</th><th scope="col">Ongoing time (hours)</th></tr></thead><tbody id="task-rows"></tbody></table></div>
 </section>
 </main><script>
 const states=['Pending','Ongoing','Blocked','Done'];let tasks=[];
@@ -78,9 +78,13 @@ function renderTable(){
    input.value=t[field];input.setAttribute('aria-label',`${label} for ${t.title}`);
    input.onchange=()=>{if(!input.reportValidity())return;if(field==='status'||field==='priority')input.dataset[field]=input.value;update(t.id,{[field]:input.value})};cell.append(input);row.append(cell);
   }
-  rows.append(row);
+  const timeCell=document.createElement('td'),timeInput=document.createElement('input');
+  timeInput.type='number';timeInput.min='0';timeInput.max=String(Number.MAX_SAFE_INTEGER/3600000);timeInput.step='any';timeInput.required=true;
+  timeInput.dataset.timeId=t.id;timeInput.value=(duration(t)/3600000).toFixed(4);timeInput.setAttribute('aria-label',`Total Ongoing hours for ${t.title}`);
+  timeInput.onchange=()=>{if(timeInput.reportValidity())update(t.id,{accumulated_ms:Math.round(Number(timeInput.value)*3600000)})};
+  timeCell.append(timeInput);row.append(timeCell);rows.append(row);
  }
- if(!tasks.length){const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=4;cell.textContent='No tasks';row.append(cell);rows.append(row)}
+ if(!tasks.length){const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=5;cell.textContent='No tasks';row.append(cell);rows.append(row)}
 }
 let refreshing=false,saving=0;
 async function refresh(force=false){
@@ -104,6 +108,7 @@ document.querySelector('#task-rows').addEventListener('focusout',()=>setTimeout(
 // shortcut: other tabs refresh once per second; use push updates if subsecond sync is needed.
 setInterval(()=>{
  for(const el of document.querySelectorAll('strong[data-id]')){const t=tasks.find(x=>x.id===Number(el.dataset.id));if(t)el.textContent=fmt(duration(t))}
+ for(const input of document.querySelectorAll('input[data-time-id]')){const t=tasks.find(x=>x.id===Number(input.dataset.timeId));if(t&&input!==document.activeElement)input.value=(duration(t)/3600000).toFixed(4)}
  if(!saving)refresh();
 },1000);refresh(true);
 </script></body></html>'''
@@ -130,8 +135,8 @@ def initialize():
 
 
 def task_fields(data, creating=False):
-    if not creating and (not data or data.keys() - {"title", "status", "note", "priority"}):
-        raise ValueError("Provide title, status, note, or priority")
+    if not creating and (not data or data.keys() - {"title", "status", "note", "priority", "accumulated_ms"}):
+        raise ValueError("Provide title, status, note, priority, or accumulated_ms")
     fields = {"title": "", "status": "Pending", "note": "", "priority": "Medium"} if creating else {}
     fields.update(data)
     for field, limit in (("title", 200), ("note", 2000)):
@@ -145,7 +150,11 @@ def task_fields(data, creating=False):
         raise ValueError("Unknown status")
     if "priority" in fields and fields["priority"] not in PRIORITIES:
         raise ValueError("Unknown priority")
-    return {key: value for key, value in fields.items() if key in {"title", "status", "note", "priority"}}
+    if "accumulated_ms" in fields:
+        value = fields["accumulated_ms"]
+        if type(value) is not int or not 0 <= value <= 2**53 - 1:
+            raise ValueError("Ongoing time must be a nonnegative whole number of milliseconds up to 2^53 - 1")
+    return {key: value for key, value in fields.items() if key in {"title", "status", "note", "priority", "accumulated_ms"}}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -191,9 +200,9 @@ class Handler(BaseHTTPRequestHandler):
             now = int(time.time() * 1000)
             with closing(connection()) as db:
                 cur = db.execute("""INSERT INTO tasks
-                    (title,status,note,priority,created_ms,ongoing_started_ms) VALUES (?,?,?,?,?,?)""",
+                    (title,status,note,priority,created_ms,ongoing_started_ms,accumulated_ms) VALUES (?,?,?,?,?,?,?)""",
                     (fields["title"], fields["status"], fields["note"], fields["priority"], now,
-                     now if fields["status"] == "Ongoing" else None))
+                     now if fields["status"] == "Ongoing" else None, fields.get("accumulated_ms", 0)))
                 db.commit()
                 self.reply(201, {"id": cur.lastrowid})
         except (ValueError, json.JSONDecodeError) as exc:
@@ -212,10 +221,10 @@ class Handler(BaseHTTPRequestHandler):
                     db.rollback()
                     return self.reply(404, {"error": "Task not found"})
                 status = fields.get("status", row["status"])
-                if row["status"] != status:
+                if row["status"] != status or "accumulated_ms" in fields:
                     now = int(time.time() * 1000)
-                    total = row["accumulated_ms"]
-                    if row["status"] == "Ongoing" and row["ongoing_started_ms"] is not None:
+                    total = fields.get("accumulated_ms", row["accumulated_ms"])
+                    if "accumulated_ms" not in fields and row["status"] == "Ongoing" and row["ongoing_started_ms"] is not None:
                         total += max(0, now - row["ongoing_started_ms"])
                     started = now if status == "Ongoing" else None
                     fields.update(accumulated_ms=total, ongoing_started_ms=started)
