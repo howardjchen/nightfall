@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 STATUSES = ("Pending", "Ongoing", "Blocked", "Done")
 PRIORITIES = ("Low", "Medium", "High")
+ONGOING_LIMIT_MS = 8 * 60 * 60 * 1000
 DB = Path(os.environ.get("ISSUE_TRACKER_DB", "issue_tracker.sqlite3"))
 
 PAGE = r'''<!doctype html>
@@ -33,12 +34,12 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 [data-status="Pending"]{--status-bg:#b8b8b8;--status-fg:#202020}[data-status="Ongoing"]{--status-bg:#d49a6a;--status-fg:#2a1a0d}[data-status="Blocked"]{--status-bg:#f28bbb;--status-fg:#3d1127}[data-status="Done"]{--status-bg:#65d995;--status-fg:#102d1b}
 .status-label,select.status{background:var(--status-bg);color:var(--status-fg);border:0;border-radius:4px;padding:4px 8px;font-size:.84rem;font-weight:500}select.status{cursor:pointer;max-width:130px}select.status option{background:#252525;color:#ededeb}
 [data-priority="High"]{--priority-bg:#ff8585;--priority-fg:#450f0f}[data-priority="Medium"]{--priority-bg:#ffd166;--priority-fg:#3b2900}[data-priority="Low"]{--priority-bg:#80bdff;--priority-fg:#102c4a}
-.priority-label,select.priority{background:var(--priority-bg);color:var(--priority-fg);border:0;border-radius:4px;padding:4px 8px;font-size:.84rem;font-weight:500}select.priority{cursor:pointer}select.priority option{background:#252525;color:#ededeb}
+select.priority{background:var(--priority-bg);color:var(--priority-fg);border:0;border-radius:4px;padding:4px 8px;font-size:.84rem;font-weight:500}select.priority{cursor:pointer}select.priority option{background:#252525;color:#ededeb}
 [hidden]{display:none!important}
 @media(max-width:850px){.board{grid-template-columns:repeat(2,minmax(0,1fr))}header{align-items:start;flex-direction:column;gap:10px}}@media(max-width:530px){main{padding:24px 14px 40px}.board{grid-template-columns:1fr}.lane{min-height:120px}}
 input::placeholder,textarea::placeholder{color:#aaa9a5;opacity:1}
 </style></head><body><main>
-<header><div><h1>Issue Time Tracker</h1><p>Track total time spent in Ongoing</p></div><div class="hint">Drag cards or use their menu to change status</div></header>
+<header><div><h1>Issue Time Tracker</h1><p>Track total time spent in Ongoing · Automatically blocked after 8 continuous hours</p></div><div class="hint">Drag cards or use their menu to change status</div></header>
 <nav class="views" aria-label="Task view"><button type="button" data-view="board-view" aria-pressed="true">Board</button><button type="button" data-view="table-view" aria-pressed="false">Table</button></nav>
 <div id="error" class="error" role="alert"></div>
 <section id="board-view" aria-label="Task board">
@@ -63,7 +64,7 @@ function showError(e){err.textContent=e.message||String(e)}
 async function api(url,opts){let res=await fetch(url,opts);let data=await res.json();if(!res.ok)throw Error(data.error||'Request failed');return data}
 function render(){board.replaceChildren();for(const state of states){const lane=document.createElement('section');lane.className='lane';lane.dataset.status=state;const subset=tasks.filter(t=>t.status===state);const h=document.createElement('h2');const label=document.createElement('span');label.className='status-label';label.textContent=state;h.append(label);const count=document.createElement('span');count.className='count';count.textContent=subset.length;h.append(count);lane.append(h);
 lane.ondragover=e=>{e.preventDefault();lane.classList.add('over')};lane.ondragleave=e=>{if(!lane.contains(e.relatedTarget))lane.classList.remove('over')};lane.ondrop=e=>{e.preventDefault();lane.classList.remove('over');change(Number(e.dataTransfer.getData('text/plain')),state)};
-for(const t of subset){const card=document.createElement('article');card.className='card';card.draggable=true;card.ondragstart=e=>e.dataTransfer.setData('text/plain',String(t.id));const name=document.createElement('h3');name.textContent=t.title;const bottom=document.createElement('div');bottom.className='bottom';const d=document.createElement('div');d.className='duration';d.textContent='Total Ongoing time';const strong=document.createElement('strong');strong.dataset.id=t.id;strong.textContent=fmt(duration(t));d.append(strong);const select=document.createElement('select');select.setAttribute('aria-label',`${t.title} status`);for(const x of states){const op=document.createElement('option');op.value=x;op.textContent=x;select.append(op)}select.value=state;select.className='status';select.dataset.status=state;select.onchange=()=>{select.dataset.status=select.value;change(t.id,select.value)};select.onpointerdown=e=>e.stopPropagation();bottom.append(d,select);const details=document.createElement('p');details.className='details';const priority=document.createElement('span');priority.className='priority-label';priority.dataset.priority=t.priority;priority.textContent=t.priority;details.append(priority);card.append(name,details,bottom);lane.append(card)}if(!subset.length){const empty=document.createElement('p');empty.className='empty';empty.textContent='No tasks';lane.append(empty)}board.append(lane)}}
+for(const t of subset){const card=document.createElement('article');card.className='card';card.draggable=true;card.ondragstart=e=>e.dataTransfer.setData('text/plain',String(t.id));const name=document.createElement('h3');name.textContent=t.title;const bottom=document.createElement('div');bottom.className='bottom';const d=document.createElement('div');d.className='duration';d.textContent='Total Ongoing time';const strong=document.createElement('strong');strong.dataset.id=t.id;strong.textContent=fmt(duration(t));d.append(strong);const select=document.createElement('select');select.setAttribute('aria-label',`${t.title} status`);for(const x of states){const op=document.createElement('option');op.value=x;op.textContent=x;select.append(op)}select.value=state;select.className='status';select.dataset.status=state;select.onchange=()=>{select.dataset.status=select.value;change(t.id,select.value)};select.onpointerdown=e=>e.stopPropagation();bottom.append(d,select);const details=document.createElement('p');details.className='details';const priority=document.createElement('select');priority.className='priority';priority.dataset.priority=t.priority;priority.setAttribute('aria-label',`${t.title} priority`);for(const value of ['High','Medium','Low']){const option=document.createElement('option');option.value=value;option.textContent=value;priority.append(option)}priority.value=t.priority;priority.onchange=()=>{priority.dataset.priority=priority.value;update(t.id,{priority:priority.value})};priority.onpointerdown=e=>e.stopPropagation();details.append(priority);card.append(name,details,bottom);lane.append(card)}if(!subset.length){const empty=document.createElement('p');empty.className='empty';empty.textContent='No tasks';lane.append(empty)}board.append(lane)}}
 function renderTable(){
  const rows=document.querySelector('#task-rows');rows.replaceChildren();
  const statusOrder=['Ongoing','Blocked','Pending','Done'],priorityOrder=['High','Medium','Low'];
@@ -131,7 +132,29 @@ def initialize():
             db.execute("ALTER TABLE tasks ADD COLUMN note TEXT NOT NULL DEFAULT ''")
         if "priority" not in columns:
             db.execute("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'Medium'")
+        if "ongoing_since_ms" not in columns:
+            db.execute("ALTER TABLE tasks ADD COLUMN ongoing_since_ms INTEGER")
+            db.execute("UPDATE tasks SET ongoing_since_ms=ongoing_started_ms WHERE status='Ongoing'")
+        block_overdue(db)
         db.commit()
+
+
+def block_overdue(db):
+    db.execute("""UPDATE tasks SET status='Blocked',
+        accumulated_ms=accumulated_ms + MAX(0, ongoing_since_ms + ? - ongoing_started_ms),
+        ongoing_started_ms=NULL, ongoing_since_ms=NULL
+        WHERE status='Ongoing' AND ongoing_since_ms <= ?""",
+        (ONGOING_LIMIT_MS, int(time.time() * 1000) - ONGOING_LIMIT_MS))
+
+
+class TrackerServer(ThreadingHTTPServer):
+    def service_actions(self):
+        try:
+            with closing(connection()) as db:
+                block_overdue(db)
+                db.commit()
+        except sqlite3.Error as exc:
+            print(f"Could not check Ongoing time limit: {exc}", flush=True)
 
 
 def task_fields(data, creating=False):
@@ -187,6 +210,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif path == "/api/tasks":
             with closing(connection()) as db:
+                block_overdue(db)
+                db.commit()
                 rows = db.execute("SELECT * FROM tasks ORDER BY id DESC").fetchall()
                 self.reply(200, [dict(row) for row in rows])
         else:
@@ -200,9 +225,10 @@ class Handler(BaseHTTPRequestHandler):
             now = int(time.time() * 1000)
             with closing(connection()) as db:
                 cur = db.execute("""INSERT INTO tasks
-                    (title,status,note,priority,created_ms,ongoing_started_ms,accumulated_ms) VALUES (?,?,?,?,?,?,?)""",
+                    (title,status,note,priority,created_ms,ongoing_started_ms,accumulated_ms,ongoing_since_ms) VALUES (?,?,?,?,?,?,?,?)""",
                     (fields["title"], fields["status"], fields["note"], fields["priority"], now,
-                     now if fields["status"] == "Ongoing" else None, fields.get("accumulated_ms", 0)))
+                     now if fields["status"] == "Ongoing" else None, fields.get("accumulated_ms", 0),
+                     now if fields["status"] == "Ongoing" else None))
                 db.commit()
                 self.reply(201, {"id": cur.lastrowid})
         except (ValueError, json.JSONDecodeError) as exc:
@@ -216,6 +242,7 @@ class Handler(BaseHTTPRequestHandler):
             fields = task_fields(self.read_json())
             with closing(connection()) as db:
                 db.execute("BEGIN IMMEDIATE")
+                block_overdue(db)
                 row = db.execute("SELECT * FROM tasks WHERE id=?", (int(parts[3]),)).fetchone()
                 if row is None:
                     db.rollback()
@@ -228,6 +255,8 @@ class Handler(BaseHTTPRequestHandler):
                         total += max(0, now - row["ongoing_started_ms"])
                     started = now if status == "Ongoing" else None
                     fields.update(accumulated_ms=total, ongoing_started_ms=started)
+                    if row["status"] != status:
+                        fields["ongoing_since_ms"] = started
                 assignments = ", ".join(f"{key}=?" for key in fields)
                 db.execute(f"UPDATE tasks SET {assignments} WHERE id=?", (*fields.values(), row["id"]))
                 db.commit()
@@ -242,7 +271,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
     initialize()
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server = TrackerServer((args.host, args.port), Handler)
     print(f"Listening on http://{args.host}:{args.port}  (database: {DB.resolve()})", flush=True)
     try:
         server.serve_forever()
